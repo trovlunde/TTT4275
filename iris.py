@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.pyplot import figure
 from matplotlib import style
 import matplotlib.animation as animation
+from sklearn.metrics import ConfusionMatrixDisplay
 
 style.use('seaborn-paper')
 
@@ -20,18 +21,21 @@ iris_data = [
 n_attributes = len(attribute_names)
 n_classes = len(iris_data)
 dropped_attributes = [] #Any listed attribute dropped.
-split_at = 20
+n_dropped = len(dropped_attributes)
+n_attributes -= n_dropped
+split_at = 30
 alpha = 0.005
 iterations = 500
-train_first = 1
+test_first = True
+tolerated_err = 0.045
 
 def plot_histogram(iris_data):
-    bins = np.linspace(0, 10, 40)
+    bins = np.linspace(0, 10, 100)
 
     for count, value in enumerate(iris_data):
         value["class"] = count
 
-    fig, axis = plt.subplots(n_attributes, 1, sharey = True, tight_layout=True, figsize=(12, 8))
+    fig, axis = plt.subplots(n_attributes)
 
     for i in range(n_attributes):
         for j in range(n_classes):
@@ -41,7 +45,8 @@ def plot_histogram(iris_data):
         axis[i].set_title(attribute_names[i])
         axis[i].set_ylabel("n")
         axis[i].set_xlabel("mm")
-
+    axis[0].set_ylim([0, 15])
+    axis[1].set_ylim([0, 15])
     plt.show()  
 
 plot_histogram(iris_data)
@@ -90,25 +95,27 @@ def split_data(iris_data, split_at, default):
             test_y[i][round(label)] = 1
     return train_x, train_y, test_x, test_y
 
-train_x, train_y, test_x, test_y = split_data(iris_data, split_at, train_first)
+train_x, train_y, test_x, test_y = split_data(iris_data, split_at, test_first)
 
 W = np.zeros((n_classes, n_attributes))
-b = np.zeros((n_classes,))
+w_0 = np.zeros((n_classes,))
+
 
 def sigmoid(x):
     return np.array(1 / (1 + np.exp(-x)))
 
-def prediction(x, W, b):
-    prediction = np.array([sigmoid((np.matmul(W,x[i])+b)) for i in range(x.shape[0])])
+def prediction(x, W, w_0):
+    prediction = np.array([sigmoid((np.matmul(W,x[i])+w_0)) for i in range(x.shape[0])])
     return prediction
 
 
 #Mean square error
 def MSE(pred, y):
     # (1/N)*sum(error^2)
+    
     return np.sum(np.matmul(np.transpose(pred-y),(pred-y))) / pred.shape[0]
 
-def train_W_b(pred, y, x, W, b, alpha):
+def train_W_b(pred, y, x, W, w_0, alpha):
     pred_error = pred - y
     pred_z_error = np.multiply(pred,(1-pred))
     squarebracket = np.multiply(pred_error, pred_z_error)
@@ -118,9 +125,9 @@ def train_W_b(pred, y, x, W, b, alpha):
     for i in range (x.shape[0]):
         dW = np.add(dW, np.outer(squarebracket[i], x[i]))
     
-    dB = np.sum(squarebracket, axis=0)
+    dw_0 = np.sum(squarebracket, axis=0)
 
-    return ((W-alpha*dW), (b-alpha*dB))
+    return ((W-alpha*dW), (w_0-alpha*dw_0))
 
 figure = plt.figure()
 axis = figure.add_subplot(1,1,1)
@@ -130,43 +137,9 @@ plot_iteration = []
 train_errors = []
 test_errors = []
 
-def run(i):
-    global W
-    global b
-
-    train_prediction = prediction(train_x, W,b)
-    test_prediction = prediction(test_x, W, b)
-
-    train_error = MSE(train_prediction, train_y)
-    test_error = MSE(test_prediction, test_y)
-    print(train_error)
-    print(test_error)
-
-    plot_iteration.append(float(i))
-    train_errors.append(train_error)
-    test_errors.append(test_error)
-
-    axis.clear()
-    axis.plot(plot_iteration, train_errors, "blue")
-    axis.plot(plot_iteration, test_errors, "red")
-
-    W, b = train_W_b(train_prediction, train_y, train_x, W, b, alpha)
-
-# Generate confusion matrix
-def generate_confusion_matrix(x, y, W, b):
-    pred = prediction(x, W, b)
-
-    confusion_matrix = np.zeros((n_classes, n_classes))
-
-    for i in range(pred.shape[0]):
-        confusion_matrix[np.argmax(y[i])][np.argmax(pred[i])] += 1
-
-    return confusion_matrix
-
-
-# Returns error rate based on predictions
-def get_error_rate(x, y, W, b):
-    pred = prediction(x, W, b)
+error_rate = 1
+def get_error_rate(x, y, W, w_0):
+    pred = prediction(x, W, w_0)
 
     mistakes = 0
 
@@ -176,15 +149,69 @@ def get_error_rate(x, y, W, b):
 
     return mistakes/pred.shape[0]
 
-animate = animation.FuncAnimation(figure, run, interval=16, frames=iterations, repeat = False)
+def gen():
+    global error_rate
+    i = 0
+    while (error_rate >= tolerated_err and i<iterations):
+        i += 1
+        yield i
+
+def run(i):
+    global W
+    global w_0
+    global error_rate
+
+    error_rate = get_error_rate(train_x, train_y, W, w_0)
+    print(error_rate)
+
+    train_prediction = prediction(train_x, W, w_0)
+    test_prediction = prediction(test_x, W, w_0)
+
+    train_error = MSE(train_prediction, train_y)
+    test_error = MSE(test_prediction, test_y)
+    #print(test_error)
+    #print(train_error)
+
+    plot_iteration.append(float(i))
+    train_errors.append(train_error)
+    test_errors.append(test_error)
+
+    axis.clear()
+    axis.plot(plot_iteration, train_errors, "blue")
+    axis.plot(plot_iteration, test_errors, "red")
+
+    W, w_0 = train_W_b(train_prediction, train_y, train_x, W, w_0, alpha)
+
+# Generate confusion matrix
+def generate_confusion_matrix(x, y, W, w_0):
+    pred = prediction(x, W, w_0)
+
+    confusion_matrix = np.zeros((n_classes, n_classes))
+
+    for i in range(pred.shape[0]):
+        confusion_matrix[np.argmax(y[i])][np.argmax(pred[i])] += 1
+
+    return confusion_matrix
+
+
+animate = animation.FuncAnimation(figure, run, interval=16, frames=gen, repeat = False)
+print(W)
 plt.show()
 
+
 print("Error rate train")
-print(get_error_rate(train_x, train_y, W, b))
+print(get_error_rate(train_x, train_y, W, w_0))
 print("Confusion matrix train")
-print(generate_confusion_matrix(train_x, train_y, W, b))
+confusion_matrix_train = generate_confusion_matrix(train_x,train_y, W, w_0)
+print(confusion_matrix_train)
+disp = ConfusionMatrixDisplay(confusion_matrix_train, display_labels=legends)
+disp.plot()
 
 print("Error rate test")
-print(get_error_rate(test_x, test_y, W, b))
+print(get_error_rate(test_x, test_y, W, w_0))
+confusion_matrix_test = generate_confusion_matrix(test_x,test_y, W, w_0)
 print("Confusion matrix test")
-print(generate_confusion_matrix(test_x, test_y, W, b))
+print(confusion_matrix_test)
+disp2 = ConfusionMatrixDisplay(confusion_matrix_test, display_labels=legends)
+disp2.plot()
+plt.show()
